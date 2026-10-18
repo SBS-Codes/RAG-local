@@ -156,13 +156,14 @@ Answer:"""
         k: int = 3,
         system_instruction: Optional[str] = None,
         model: str = "gpt-4o-mini",
-        temperature: float = 0.0
+        temperature: float = 0.0,
+        local_llm_client=None,
     ) -> Dict[str, Any]:
         """
         Executes end-to-end RAG:
           1. Retrieves top-k relevant chunks
           2. Formats augmented prompt
-          3. Calls LLM if OPENAI_API_KEY is available
+          3. Calls LLM (local GGUF → OpenAI API → None)
         """
         retrieved = self.search(query=query, k=k)
         system_prompt, user_prompt = self.build_prompt(
@@ -171,13 +172,21 @@ Answer:"""
             system_instruction=system_instruction
         )
 
-        openai_key = os.getenv("OPENAI_API_KEY")
         llm_response = None
         tokens_used = None
+        llm_source = None
 
-        if openai_key:
+        # Priority 1: Local LLM
+        if local_llm_client is not None:
+            result = local_llm_client.chat(system_prompt, user_prompt)
+            llm_response = result["answer"]
+            tokens_used = result.get("total_tokens")
+            llm_source = "local"
+
+        # Priority 2: OpenAI API
+        elif os.getenv("OPENAI_API_KEY"):
             from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             response = client.chat.completions.create(
                 model=model,
                 temperature=temperature,
@@ -188,6 +197,7 @@ Answer:"""
             )
             llm_response = response.choices[0].message.content
             tokens_used = response.usage.total_tokens
+            llm_source = "openai"
 
         copy_paste_prompt = f"System Instruction:\n{system_prompt}\n\n{user_prompt}"
 
@@ -198,5 +208,6 @@ Answer:"""
             "user_prompt": user_prompt,
             "formatted_prompt_for_clipboard": copy_paste_prompt,
             "answer": llm_response,
-            "tokens_used": tokens_used
+            "tokens_used": tokens_used,
+            "llm_source": llm_source,
         }

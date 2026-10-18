@@ -17,7 +17,7 @@ import os
 import sys
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -204,22 +204,42 @@ Answer:"""
 # ==============================================================================
 # Step 7: Call LLM (or fallback)
 # ==============================================================================
-def generate_answer(system_prompt: str, user_prompt: str, question: str) -> None:
+def generate_answer(
+    system_prompt: str,
+    user_prompt: str,
+    question: str,
+    local_llm_client=None,
+) -> None:
     """
     Step 7: Generation.
-    Sends prompt to OpenAI if OPENAI_API_KEY is available.
-    Otherwise prints the prompt so the learner can paste it into ChatGPT or Claude.
+    Priority order:
+      1. Local LLM (if local_llm_client is provided)
+      2. OpenAI API (if OPENAI_API_KEY is set in .env)
+      3. Print prompt for manual copy-paste into any free LLM chat window
     """
     load_dotenv()
     openai_key = os.getenv("OPENAI_API_KEY")
 
-    if openai_key:
+    if local_llm_client is not None:
+        # ── Option A: Local LLM via llama-cpp-python ──────────────────────
+        print(f"   Using local model: {local_llm_client.model_name}")
+        result = local_llm_client.chat(system_prompt, user_prompt)
+
+        print("=" * 60)
+        print(f"Q: {question}")
+        print("=" * 60)
+        print(f"A: {result['answer']}")
+        if result.get("total_tokens"):
+            print(f"\n(Local tokens used: {result['total_tokens']})")
+
+    elif openai_key:
+        # ── Option B: OpenAI API ──────────────────────────────────────────
         from openai import OpenAI
 
         client = OpenAI(api_key=openai_key)
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            temperature=0,  # 0 ensures focused, deterministic responses
+            temperature=0,
             max_tokens=400,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -234,7 +254,9 @@ def generate_answer(system_prompt: str, user_prompt: str, question: str) -> None
         print("=" * 60)
         print(f"A: {answer}")
         print(f"\n(Tokens used: {tokens} — approx ${tokens * 0.00000015:.6f})")
+
     else:
+        # ── Option C: No LLM available — clipboard fallback ──────────────
         print("\n" + "=" * 65)
         print("📢 NO API KEY DETECTED — COPY & PASTE PROMPT INTO ANY LLM CHAT WINDOW")
         print("=" * 65)
@@ -257,7 +279,8 @@ def ask(
     question: str,
     embed_model: SentenceTransformer,
     collection: chromadb.Collection,
-    k: int = 3
+    k: int = 3,
+    local_llm_client=None,
 ) -> None:
     """Demonstrates the full end-to-end question answering pipeline."""
     load_dotenv()
@@ -281,17 +304,21 @@ def ask(
 
     # 4. Augment prompt
     context = "\n\n".join(f"[{i+1}] {t}" for i, t in enumerate(docs))
+    sys_msg = "Answer using only the context provided. If not in context, state so."
     user_msg = f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
 
     # 5. Generate answer
-    if openai_key:
+    if local_llm_client is not None:
+        result = local_llm_client.chat(sys_msg, user_msg)
+        print(f"\nAnswer (local LLM): {result['answer']}")
+    elif openai_key:
         from openai import OpenAI
         r = OpenAI(api_key=openai_key).chat.completions.create(
             model="gpt-4o-mini",
             temperature=0,
             max_tokens=300,
             messages=[
-                {"role": "system", "content": "Answer using only the context provided. If not in context, state so."},
+                {"role": "system", "content": sys_msg},
                 {"role": "user", "content": user_msg}
             ]
         )
@@ -337,11 +364,30 @@ def main():
         action="store_true",
         help="Run the mathematical cosine similarity demo."
     )
+    parser.add_argument(
+        "--local-llm",
+        action="store_true",
+        help="Use a local GGUF model (Llama 3.2 3B) for answer generation instead of OpenAI."
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Path to a custom GGUF model file (used with --local-llm)."
+    )
     args = parser.parse_args()
 
     print("=" * 60)
     print("🎓 RAG Explainer: Retrieval-Augmented Generation from Scratch")
     print("=" * 60)
+
+    # ── Load Local LLM if requested ───────────────────────────────────────────
+    local_llm_client = None
+    if args.local_llm:
+        from local_llm import LocalLLM, DEFAULT_MODEL_PATH
+        model_path = args.model_path or DEFAULT_MODEL_PATH
+        print(f"\n[Local LLM] Loading GGUF model...")
+        local_llm_client = LocalLLM(model_path=model_path, n_ctx=2048, verbose=False)
 
     # ── Step 1: Chunking ──────────────────────────────────────────────────────
     doc_path = Path(args.file) if args.file else TEXT_FILE_PATH
@@ -399,7 +445,7 @@ def main():
 
     # ── Step 7: Generation ────────────────────────────────────────────────────
     print("\n[Step 7] Generating grounded answer from LLM...")
-    generate_answer(system_prompt, user_prompt, user_question)
+    generate_answer(system_prompt, user_prompt, user_question, local_llm_client=local_llm_client)
 
     # ── Multi-question experiments ────────────────────────────────────────────
     if not args.query:
@@ -408,7 +454,7 @@ def main():
         print("=" * 60)
         for item in SAMPLE_QUESTIONS[1:]:
             print(f"\nTopic: {item['topic']}")
-            ask(item["question"], embed_model, collection, k=k)
+            ask(item["question"], embed_model, collection, k=k, local_llm_client=local_llm_client)
 
 
 if __name__ == "__main__":
