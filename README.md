@@ -41,6 +41,7 @@ Large Language Models (like ChatGPT, Claude, or Gemini) are trained on massive a
 │   Final Answer ◄─── [7] LLM Response ◄──── [6] Prompt Augmentation     │
 └────────────────────────────────────────────────────────────────────────┘
 ```
+NOTE: Check the templates.md file if you want code specs for each of these steps.
 
 ### 1. Chunking (Splitting Text)
 Embedding models have a strict size limit (often ~512 tokens). More importantly, if you feed a 50-page document into a search engine, the exact answer to a specific question will get lost. 
